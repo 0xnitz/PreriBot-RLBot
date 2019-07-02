@@ -12,3 +12,6 @@ PreriBot 1.0:
 -Ballchasing                 
 -Basic shooting                          
 -Ball path prediction and goal prediction                    
+
+
+Contact me on steam for any questions. Steam - PreriKoth
