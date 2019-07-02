@@ -7,6 +7,13 @@ import time
 Todo:
 not trying to hit the ball if its above the bot
 after the bot goes to the predicted goal place, it should try and intrecept the ball on its way to the goal
+when rotating back to net, need to stop
+not calling emergency when its an attack goal
+
+Tommorow:
+-Tidy the code heavy
+-Work on clearing the ball in the emergency function
+-Try to implement the accurate hitting code (open in chrome)
 '''
 
 def distance(x1, y1, x2, y2):
@@ -23,6 +30,8 @@ class TutorialBot(BaseAgent):
         self.DISTANCE_TO_DODGE = 500
         self.DISTANCE_FROM_BALL_TO_BOOST = 1500  # The minimum distance the ball needs to be away from the bot for the bot to boost
         self.BALL_RADIUS = 92.75
+        self.is_goal = False
+
         # The angle (from the front of the bot to the ball) at which the bot should start to powerslide.
         self.POWERSLIDE_ANGLE = math.radians(170)
 
@@ -36,34 +45,46 @@ class TutorialBot(BaseAgent):
         self.on_second_jump = False
         self.next_dodge_time = 0
 
-    def predict_path(self):
+    def predict_path(self, bounce = False): #returns the predicted path of the ball, just the bounces on the floor or all of the predicted locations
         ball_prediction = self.get_ball_prediction_struct()
         predictions = {}
+        bounces = {}
         if ball_prediction is not None:
             for i in range(0, ball_prediction.num_slices):
                 prediction_slice = ball_prediction.slices[i]
                 location = prediction_slice.physics.location
                 predictions[prediction_slice.game_seconds] = location
-        return predictions
+                if location.z < 150: bounces[prediction_slice.game_seconds] = location
+        if not bounce: return predictions
+        return bounces
+
+    #move_to functions that stops when location is met
 
     def will_be_goal(self, path):
         for key, value in path.items():
             if value.z < 640 and -890 + self.BALL_RADIUS < value.x < 890 - self.BALL_RADIUS and (value.y > 5120 or value.y < -5120):
                 return (key, value)
         return (-1, -1)
-    
-    '''def time_to_hit(self, car, bot_pos, ball_pos):
-        #values.game_info.seconds_elapsed = game time
-        goal_loc = self.will_be_goal(self.predict_path()) 
-        timer = goal_loc[1] - self.time #amount of seconds to get to the location
-        self.aim(goal_loc[0].x, goal_loc[0].y)'''
 
     def emergency(self): #This function is called when a goal is detected
         #facing = get_car_facing_vector(car)
-        goal_loc = self.will_be_goal(self.predict_path()) 
+        d = self.predict_path(bounce=True) 
+        new_d = dict([(key, value) for key, value in d.items() if key <= self.will_be_goal(d)[0]])
         #timer = goal_loc[1] - self.time #amount of seconds to get to the location
-        self.aim(goal_loc[1].x, goal_loc[1].y)
-
+        dest = None
+        for time, location in new_d.items():
+            if self.time_loc(location, time - self.time):
+                self.aim(location.x, location.y)
+                dest = location
+                break
+    
+        if dest != None and distance(self.bot_pos.x, self.bot_pos.y, dest.x, dest.y) < 250: 
+            #make a save
+            self.controller.throttle = 0
+    
+    def time_loc(self, target, amount_of_time): #This function recieves a target location and a time amount and returns whether or not the bot will be able to be there
+        d = distance(self.bot_pos.x, self.bot_pos.y, target.x, target.y)
+        return d / 1410 > amount_of_time
     
     def aim(self, target_x, target_y):
         angle_between_bot_and_target = math.atan2(target_y - self.bot_pos.y,
@@ -107,20 +128,19 @@ class TutorialBot(BaseAgent):
         self.bot_pos = packet.game_cars[self.index].physics.location
         ball_pos = packet.game_ball.physics.location
 
-        # Boost when ball is far enough away
-        self.controller.boost = distance(self.bot_pos.x, self.bot_pos.y, ball_pos.x, ball_pos.y) > self.DISTANCE_FROM_BALL_TO_BOOST
-
         # Blue has their goal at -5000 (Y axis) and orange has their goal at 5000 (Y axis). This means that:
         # - Blue is behind the ball if the ball's Y axis is greater than blue's Y axis
         # - Orange is behind the ball if the ball's Y axis is smaller than orange's Y axis
         self.controller.throttle = 1
 
         self.time = packet.game_info.seconds_elapsed
-
+        #print('h')
         if self.will_be_goal(self.predict_path()) != (-1, -1):
             print('Goal in ' + str(self.will_be_goal(self.predict_path())[0] - self.time) + ' seconds')
             self.emergency()
+            self.is_goal = True
         elif (self.index == 0 and self.bot_pos.y < ball_pos.y) or (self.index == 1 and self.bot_pos.y > ball_pos.y):
+            self.is_goal = False
             self.aim(ball_pos.x, ball_pos.y)
             if distance(self.bot_pos.x, self.bot_pos.y, ball_pos.x, ball_pos.y) < self.DISTANCE_TO_DODGE:
                 self.should_dodge = True
@@ -136,11 +156,30 @@ class TutorialBot(BaseAgent):
         if ball_pos.x == 0 and ball_pos.x == 0:
             self.aim(ball_pos.x, ball_pos.x)
             self.controller.boost = True
+        else: self.controller.boost = distance(self.bot_pos.x, self.bot_pos.y, ball_pos.x, ball_pos.y) > self.DISTANCE_FROM_BALL_TO_BOOST
 
         # This sets self.jump to be active for only 1 frame
         self.controller.jump = 0
 
         self.check_for_dodge()
+
+        ball_location = Vector2(packet.game_ball.physics.location.x, packet.game_ball.physics.location.y)
+
+        my_car = packet.game_cars[self.index]
+        car_location = Vector2(my_car.physics.location.x, my_car.physics.location.y)
+        car_direction = get_car_facing_vector(my_car)
+        car_to_ball = ball_location - car_location
+        steer_correction_radians = car_direction.correction_to(car_to_ball)
+
+        if steer_correction_radians > 0:
+            # Positive radians in the unit circle is a turn to the left.
+            turn = -1.0  # Negative value for a turn to the left.
+            action_display = "turn left"
+        else:
+            turn = 1.0
+            action_display = "turn right"
+
+        draw_debug(self.renderer, my_car, packet.game_ball, action_display)
 
         return self.controller
 
@@ -155,6 +194,14 @@ class Vector2:
 
     def __sub__(self, val):
         return Vector2(self.x - val.x, self.y - val.y)
+
+    def angle(self):
+        return math.atan2(self.y, self.x)
+    
+    def normalize(self):
+        x = math.cos(math.atan2(self.y, self.x))
+        y = math.sin(math.atan2(self.y, self.x))
+        return Vector2(x, y)
 
     def correction_to(self, ideal):
         # The in-game axes are left handed, so use -x
@@ -171,7 +218,6 @@ class Vector2:
                 correction -= 2 * math.pi
 
         return correction
-
 
 def get_car_facing_vector(car):
     pitch = float(car.physics.rotation.pitch)
