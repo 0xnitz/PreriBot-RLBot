@@ -9,6 +9,6 @@ Usage:
 Current Features:                                    
 
 PreriBot 1.0:                       
--Ballchasing
--Basic shooting
--Ball path prediction and goal prediction
+-Ballchasing                 
+-Basic shooting                          
+-Ball path prediction and goal prediction                    
